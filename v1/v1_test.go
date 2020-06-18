@@ -48,7 +48,7 @@ func TestRoundTrip(t *testing.T) {
 	for i := range keys {
 		rk, err := randBytes(aesKeySize+hmacKeySize)
 		if err != nil {
-			t.Fatalf("randBytes(%d) => err", i)
+			t.Fatalf("randBytes() => %q", err)
 		}
 		keys[i] = rk
 	}
@@ -106,7 +106,7 @@ func TestRoundTripWithPassword(t *testing.T) {
 	for _, x := range []int{13, 400} {
 		rp, err := randBytes(x)
 		if err != nil {
-			t.Fatalf("randBytes(%d) => err", x)
+			t.Fatalf("randBytes() => %q", err)
 		}
 		spasswords = append(spasswords, string(rp))
 	}

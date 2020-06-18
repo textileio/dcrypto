@@ -29,6 +29,9 @@ import (
 // Version is the version of the en/decryption library used.
 type Version uint32
 
+// keyer is a function that returns a random key.
+type keyer func() ([]byte, error)
+
 // decrypter is a function that creates a decrypter.
 type decrypter func(io.Reader, []byte) (io.ReadCloser, error)
 
@@ -46,6 +49,7 @@ const (
 // PreferedVersion is the preferred version of encryption.
 const PreferedVersion = V1
 
+var keyers map[Version]keyer
 var encrypters map[Version]encrypter
 var decrypters map[Version]decrypter
 var hashers map[Version]hasher
@@ -59,6 +63,9 @@ var hashersWithPassword map[Version]hasher
 var MaxHeaderSize = v1.HeaderSize + 4
 
 func init() {
+	keyers = map[Version]keyer{
+		V1: v1.NewKey,
+	}
 	decrypters = map[Version]decrypter{
 		V1: v1.NewDecryptReader,
 	}
@@ -77,6 +84,16 @@ func init() {
 	hashersWithPassword = map[Version]hasher{
 		V1: v1.HashWithPassword,
 	}
+}
+
+// NewKey returns a new random key.
+// The consists of two segments. One for AES and one for HMAC.
+func NewKey() ([]byte, error) {
+	keyerFn, ok := keyers[PreferedVersion]
+	if !ok {
+		return nil, fmt.Errorf("%v version could not be found", PreferedVersion)
+	}
+	return keyerFn()
 }
 
 // NewEncrypter returns an encrypting reader using the PreferedVersion.

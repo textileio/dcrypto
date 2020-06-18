@@ -32,6 +32,17 @@ func randBytes(size int) ([]byte, error) {
 	return b, err
 }
 
+// TestNewKey just tests that NewKey doesn't error.
+func TestNewKey(t *testing.T) {
+	key, err := dcrypto.NewKey()
+	if err != nil {
+		t.Fatalf("NewKey() => %q", err)
+	}
+	if len(key) != 64 {
+		t.Fatalf("expected key length 64, got %d", len(key))
+	}
+}
+
 // TestRoundTrip tests several size sets of data going through the encrypt/decrypt
 // to make sure they come out the same.
 func TestRoundTrip(t *testing.T) {
@@ -40,7 +51,7 @@ func TestRoundTrip(t *testing.T) {
 	for i := range keys {
 		rk, err := randBytes(64)
 		if err != nil {
-			t.Fatalf("randBytes(%d) => err", i)
+			t.Fatalf("randBytes() => %q", err)
 		}
 		keys[i] = rk
 	}
@@ -91,7 +102,7 @@ func TestRoundTripWithPassword(t *testing.T) {
 	for _, x := range []int{13, 400} {
 		rp, err := randBytes(x)
 		if err != nil {
-			t.Fatalf("randBytes(%d) => err", x)
+			t.Fatalf("randBytes() => %q", err)
 		}
 		spasswords = append(spasswords, string(rp))
 	}

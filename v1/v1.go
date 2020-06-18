@@ -150,6 +150,11 @@ func parseKey(k []byte) (aesKey, hmacKey []byte, err error) {
 	return k[:aesKeySize], k[aesKeySize:klen], nil
 }
 
+// NewKey returns a new random key.
+func NewKey() ([]byte, error) {
+	return randBytes(aesKeySize+hmacKeySize)
+}
+
 // NewEncryptReader returns an io.Reader wrapping the provided io.Reader.
 func NewEncryptReader(r io.Reader, key []byte) (io.Reader, error) {
 	aesKey, hmacKey, err := parseKey(key)
