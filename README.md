@@ -8,7 +8,7 @@
 
 > A stream-based encryption library
 
-This library is a modified version of the [Google Drive client](https://github.com/odeke-em/drive) [`dcrypto`](https://github.com/odeke-em/drive/blob/master/src/dcrypto/dcrypto.go) package. 
+This library is a modified version of the [Google Drive client](https://github.com/odeke-em/drive) [`dcrypto`](https://github.com/odeke-em/drive/blob/master/src/dcrypto/dcrypto.go) package. The current version uses an AES-256 cipher in CTR mode signed with an HMAC using SHA-512. Read more [here](https://github.com/odeke-em/drive/wiki/End-to-End-Encryption). 
 
 ## Table of Contents
 
