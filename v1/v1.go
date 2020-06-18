@@ -32,6 +32,7 @@ import (
 	"crypto/sha512"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"hash"
 	"io"
 	"os"
@@ -73,10 +74,6 @@ var (
 
 	// The size of the Header.
 	HeaderSize = 4 + saltSize + blockSize
-
-	// The overhead added to the file by using this library.
-	// Overhead + len(plaintext) == len(ciphertext)
-	Overhead = HeaderSize + hmacSize
 )
 
 var DecryptErr = errors.New("message corrupt or incorrect password")
@@ -144,22 +141,56 @@ func decInt32(r io.Reader) (b []byte, i int32, err error) {
 	return buf.Bytes(), i, err
 }
 
+// parseKey returns an aesKey and hmacKey from the key byte slice.
+func parseKey(k []byte) (aesKey, hmacKey []byte, err error) {
+	klen := aesKeySize+hmacKeySize
+	if len(k) != klen {
+		return nil, nil, fmt.Errorf("expected key with length %d, got %d", klen, len(k))
+	}
+	return k[:aesKeySize], k[aesKeySize:klen], nil
+}
+
+// NewKey returns a new random key.
+func NewKey() ([]byte, error) {
+	return randBytes(aesKeySize+hmacKeySize)
+}
+
 // NewEncryptReader returns an io.Reader wrapping the provided io.Reader.
+func NewEncryptReader(r io.Reader, key []byte) (io.Reader, error) {
+	aesKey, hmacKey, err := parseKey(key)
+	if err != nil {
+		return nil, err
+	}
+	return newEncryptReader(r, aesKey, hmacKey)
+}
+
+// NewEncryptReaderWithPassword returns an io.Reader wrapping the provided io.Reader.
 // It uses a user provided password and a random salt to derive keys.
 // If the key is provided interactively, it should be verified since there
 // is no recovery.
-func NewEncryptReader(r io.Reader, pass []byte) (io.Reader, error) {
+func NewEncryptReaderWithPassword(r io.Reader, pass []byte) (io.Reader, error) {
 	salt, err := randBytes(saltSize)
 	if err != nil {
 		return nil, err
 	}
-	return newEncryptReader(r, pass, salt, scryptIterations)
+	return newEncryptReaderWithPassword(r, pass, salt, scryptIterations)
 }
 
 // newEncryptReader returns a encryptReader wrapping an io.Reader.
+func newEncryptReader(r io.Reader, aesKey, hmacKey []byte) (io.Reader, error) {
+	iv, err := randBytes(blockSize)
+	if err != nil {
+		return nil, err
+	}
+	var header []byte
+	header = append(header, iv...)
+	return encrypter(r, aesKey, hmacKey, iv, header)
+}
+
+// newEncryptReaderWithPassword returns a encryptReader wrapping an io.Reader.
 // It uses a user provided password and the provided salt iterated the
 // provided number of times to derive keys.
-func newEncryptReader(r io.Reader, pass, salt []byte, iterations int32) (io.Reader, error) {
+func newEncryptReaderWithPassword(r io.Reader, pass, salt []byte, iterations int32) (io.Reader, error) {
 	itersAsBytes, err := encInt32(iterations)
 	if err != nil {
 		return nil, err
@@ -192,8 +223,20 @@ func encrypter(r io.Reader, aesKey, hmacKey, iv, header []byte) (io.Reader, erro
 }
 
 // decodeHeader decodes the header of the reader.
+// It returns the IV and original header.
+func decodeHeader(r io.Reader) (iv, header []byte, err error) {
+	iv = make([]byte, blockSize)
+	_, err = io.ReadFull(r, iv)
+	if err != nil {
+		return nil, nil, err
+	}
+	header = append(header, iv...)
+	return iv, header, err
+}
+
+// decodeHeaderWithPassword decodes the header of the reader with a password.
 // It returns the keys, IV, and original header using the password and iterations in the reader.
-func decodeHeader(r io.Reader, password []byte) (aesKey, hmacKey, iv, header []byte, err error) {
+func decodeHeaderWithPassword(r io.Reader, password []byte) (aesKey, hmacKey, iv, header []byte, err error) {
 	itersAsBytes, iterations, err := decInt32(r)
 	if err != nil {
 		return nil, nil, nil, nil, err
@@ -224,19 +267,47 @@ type decryptReader struct {
 	sReader *cipher.StreamReader
 }
 
-// NewDecryptReader creates an io.ReadCloser wrapping an io.Reader.
+// NewDecryptReader creates an io.ReadCloser wrapping an io.Reader using a password
+// to derive the AES and HMAC keys.
 // It has to read the entire io.Reader to disk using a temp file so that it can
 // hash the contents to verify that it is safe to decrypt.
 // If the file is athenticated, the DecryptReader will be returned and
 // the resulting bytes will be the plaintext.
-func NewDecryptReader(r io.Reader, pass []byte) (d io.ReadCloser, err error) {
-	mac := make([]byte, hmacSize)
-	aesKey, hmacKey, iv, header, err := decodeHeader(r, pass)
-	h := hmac.New(hashFunc, hmacKey)
-	h.Write(header)
+func NewDecryptReader(r io.Reader, key []byte) (d io.ReadCloser, err error) {
+	aesKey, hmacKey, err := parseKey(key)
 	if err != nil {
 		return nil, err
 	}
+	iv, header, err := decodeHeader(r)
+	if err != nil {
+		return nil, err
+	}
+	return newDecryptReader(r, aesKey, hmacKey, iv, header)
+}
+
+// NewDecryptReaderWithPassword creates an io.ReadCloser wrapping an io.Reader using a password
+// to derive the AES and HMAC keys.
+// It has to read the entire io.Reader to disk using a temp file so that it can
+// hash the contents to verify that it is safe to decrypt.
+// If the file is athenticated, the DecryptReader will be returned and
+// the resulting bytes will be the plaintext.
+func NewDecryptReaderWithPassword(r io.Reader, pass []byte) (d io.ReadCloser, err error) {
+	aesKey, hmacKey, iv, header, err := decodeHeaderWithPassword(r, pass)
+	if err != nil {
+		return nil, err
+	}
+	return newDecryptReader(r, aesKey, hmacKey, iv, header)
+}
+
+// newDecryptReader creates an io.ReadCloser wrapping an io.Reader.
+// It has to read the entire io.Reader to disk using a temp file so that it can
+// hash the contents to verify that it is safe to decrypt.
+// If the file is athenticated, the DecryptReader will be returned and
+// the resulting bytes will be the plaintext.
+func newDecryptReader(r io.Reader, aesKey, hmacKey, iv, header []byte) (d io.ReadCloser, err error) {
+	mac := make([]byte, hmacSize)
+	h := hmac.New(hashFunc, hmacKey)
+	h.Write(header)
 	dst, err := tmpfile.New(&tmpfile.Context{
 		Dir:    os.TempDir(),
 		Suffix: "drive-encrypted-",
@@ -247,7 +318,7 @@ func NewDecryptReader(r io.Reader, pass []byte) (d io.ReadCloser, err error) {
 	// If there is an error, try to delete the temp file.
 	defer func() {
 		if err != nil {
-			dst.Done()
+			_ = dst.Done()
 		}
 	}()
 	b, err := aes.NewCipher(aesKey)
@@ -285,7 +356,9 @@ func NewDecryptReader(r io.Reader, pass []byte) (d io.ReadCloser, err error) {
 	if !hmac.Equal(mac, h.Sum(nil)) {
 		return nil, DecryptErr
 	}
-	dst.Seek(0, 0)
+	if _, err = dst.Seek(0, 0); err != nil {
+		return nil, err
+	}
 	return d, nil
 }
 
@@ -300,8 +373,28 @@ func (d *decryptReader) Close() error {
 }
 
 // Hash hashes the plaintext based on the header of the encrypted file and returns the hash Sum.
-func Hash(plainTextR io.Reader, headerR io.Reader, password []byte, h hash.Hash) ([]byte, error) {
-	aesKey, hmacKey, iv, eHeader, err := decodeHeader(headerR, password)
+func Hash(plainTextR io.Reader, headerR io.Reader, key []byte, h hash.Hash) ([]byte, error) {
+	aesKey, hmacKey, err := parseKey(key)
+	if err != nil {
+		return nil, err
+	}
+	iv, eHeader, err := decodeHeader(headerR)
+	if err != nil {
+		return nil, err
+	}
+	encReader, err := encrypter(plainTextR, aesKey, hmacKey, iv, eHeader)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := io.Copy(h, encReader); err != nil {
+		return nil, err
+	}
+	return h.Sum(nil), nil
+}
+
+// HashWithPassword hashes the plaintext based on the header of the encrypted file and returns the hash Sum.
+func HashWithPassword(plainTextR io.Reader, headerR io.Reader, password []byte, h hash.Hash) ([]byte, error) {
+	aesKey, hmacKey, iv, eHeader, err := decodeHeaderWithPassword(headerR, password)
 	if err != nil {
 		return nil, err
 	}

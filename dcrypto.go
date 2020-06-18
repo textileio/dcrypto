@@ -29,6 +29,9 @@ import (
 // Version is the version of the en/decryption library used.
 type Version uint32
 
+// keyer is a function that returns a random key.
+type keyer func() ([]byte, error)
+
 // decrypter is a function that creates a decrypter.
 type decrypter func(io.Reader, []byte) (io.ReadCloser, error)
 
@@ -46,38 +49,77 @@ const (
 // PreferedVersion is the preferred version of encryption.
 const PreferedVersion = V1
 
+var keyers map[Version]keyer
 var encrypters map[Version]encrypter
 var decrypters map[Version]decrypter
 var hashers map[Version]hasher
+var encryptersWithPassword map[Version]encrypter
+var decryptersWithPassword map[Version]decrypter
+var hashersWithPassword map[Version]hasher
 
 // MaxHeaderSize is the maximum header size of all versions.
 // This many bytes at the beginning of a file should be enough to compute
 // a hash of a local file.
 var MaxHeaderSize = v1.HeaderSize + 4
 
-// Overhead is the overhead added by the preferred encryption library plus the version.
-var Overhead = v1.Overhead + 4
-
 func init() {
+	keyers = map[Version]keyer{
+		V1: v1.NewKey,
+	}
 	decrypters = map[Version]decrypter{
 		V1: v1.NewDecryptReader,
 	}
-
 	encrypters = map[Version]encrypter{
 		V1: v1.NewEncryptReader,
 	}
 	hashers = map[Version]hasher{
 		V1: v1.Hash,
 	}
+	decryptersWithPassword = map[Version]decrypter{
+		V1: v1.NewDecryptReaderWithPassword,
+	}
+	encryptersWithPassword = map[Version]encrypter{
+		V1: v1.NewEncryptReaderWithPassword,
+	}
+	hashersWithPassword = map[Version]hasher{
+		V1: v1.HashWithPassword,
+	}
+}
+
+// NewKey returns a new random key.
+// The consists of two segments. One for AES and one for HMAC.
+func NewKey() ([]byte, error) {
+	keyerFn, ok := keyers[PreferedVersion]
+	if !ok {
+		return nil, fmt.Errorf("%v version could not be found", PreferedVersion)
+	}
+	return keyerFn()
 }
 
 // NewEncrypter returns an encrypting reader using the PreferedVersion.
-func NewEncrypter(r io.Reader, password []byte) (io.Reader, error) {
+func NewEncrypter(r io.Reader, key []byte) (io.Reader, error) {
 	v, err := writeVersion(PreferedVersion)
 	if err != nil {
 		return nil, err
 	}
 	encrypterFn, ok := encrypters[PreferedVersion]
+	if !ok {
+		return nil, fmt.Errorf("%v version could not be found", PreferedVersion)
+	}
+	encReader, err := encrypterFn(r, key)
+	if err != nil {
+		return nil, err
+	}
+	return io.MultiReader(bytes.NewReader(v), encReader), nil
+}
+
+// NewEncrypterWithPassword returns an encrypting reader using the PreferedVersion.
+func NewEncrypterWithPassword(r io.Reader, password []byte) (io.Reader, error) {
+	v, err := writeVersion(PreferedVersion)
+	if err != nil {
+		return nil, err
+	}
+	encrypterFn, ok := encryptersWithPassword[PreferedVersion]
 	if !ok {
 		return nil, fmt.Errorf("%v version could not be found", PreferedVersion)
 	}
@@ -89,7 +131,7 @@ func NewEncrypter(r io.Reader, password []byte) (io.Reader, error) {
 }
 
 // NewDecrypter returns a decrypting reader based on the version used to encrypt.
-func NewDecrypter(r io.Reader, password []byte) (io.ReadCloser, error) {
+func NewDecrypter(r io.Reader, key []byte) (io.ReadCloser, error) {
 	version, err := readVersion(r)
 	if err != nil {
 		return nil, err
@@ -98,17 +140,44 @@ func NewDecrypter(r io.Reader, password []byte) (io.ReadCloser, error) {
 	if !ok {
 		return nil, fmt.Errorf("unknown decrypter for version(%d)", version)
 	}
+	return decrypterFn(r, key)
+}
+
+// NewDecrypterWithPassword returns a decrypting reader based on the version used to encrypt.
+func NewDecrypterWithPassword(r io.Reader, password []byte) (io.ReadCloser, error) {
+	version, err := readVersion(r)
+	if err != nil {
+		return nil, err
+	}
+	decrypterFn, ok := decryptersWithPassword[version]
+	if !ok {
+		return nil, fmt.Errorf("unknown decrypter for version(%d)", version)
+	}
 	return decrypterFn(r, password)
 }
 
 // Hash will hash of plaintext based on the header of the encrypted file and returns the hash Sum.
-func Hash(r io.Reader, header io.Reader, password []byte, hashFunc func() hash.Hash) ([]byte, error) {
+func Hash(r io.Reader, header io.Reader, key []byte, hashFunc func() hash.Hash) ([]byte, error) {
 	h := hashFunc()
 	version, err := readVersion(io.TeeReader(header, h))
 	if err != nil {
 		return nil, err
 	}
 	hasherFn, ok := hashers[version]
+	if !ok {
+		return nil, fmt.Errorf("unknown hasher for version(%d)", version)
+	}
+	return hasherFn(r, header, key, h)
+}
+
+// HashWithPassword will hash of plaintext based on the header of the encrypted file and returns the hash Sum.
+func HashWithPassword(r io.Reader, header io.Reader, password []byte, hashFunc func() hash.Hash) ([]byte, error) {
+	h := hashFunc()
+	version, err := readVersion(io.TeeReader(header, h))
+	if err != nil {
+		return nil, err
+	}
+	hasherFn, ok := hashersWithPassword[version]
 	if !ok {
 		return nil, fmt.Errorf("unknown hasher for version(%d)", version)
 	}

@@ -44,6 +44,59 @@ func TestKeys(t *testing.T) {
 // TestRoundTrip tests several size sets of data going through the encrypt/decrypt
 // to make sure they come out the same.
 func TestRoundTrip(t *testing.T) {
+	keys := make([][]byte, 100)
+	for i := range keys {
+		rk, err := randBytes(aesKeySize+hmacKeySize)
+		if err != nil {
+			t.Fatalf("randBytes() => %q", err)
+		}
+		keys[i] = rk
+	}
+	sizes := []int{24, 1024, 15872, 16364, 16384, 16394, 16896, 66560}
+	for _, key := range keys {
+		for _, size := range sizes {
+			t.Logf("Testing file of size: %db", size)
+			b, err := randBytes(size)
+			if err != nil {
+				t.Errorf("randBytes(%d) => %q; want nil", size, err)
+				continue
+			}
+			aesKey, hmacKey, err := parseKey(key)
+			if err != nil {
+				t.Errorf("parseKey() => %q; want nil", err)
+				continue
+			}
+			encReader, err := newEncryptReader(bytes.NewReader(b), aesKey, hmacKey)
+			if err != nil {
+				t.Errorf("NewEncryptReader() => %q; want nil", err)
+				continue
+			}
+			cipher, err := ioutil.ReadAll(encReader)
+			if err != nil {
+				t.Errorf("ioutil.ReadAll(*EncryptReader) => %q; want nil", err)
+				continue
+			}
+			decReader, err := NewDecryptReader(bytes.NewReader(cipher), key)
+			if err != nil {
+				t.Errorf("NewDecryptReader() => %q; want nil", err)
+				continue
+			}
+			plain, err := ioutil.ReadAll(decReader)
+			_ = decReader.Close()
+			if err != nil {
+				t.Errorf("ioutil.ReadAll(*DecryptReader) => %q; want nil", err)
+				continue
+			}
+			if !bytes.Equal(b, plain) {
+				t.Errorf("Encrypt/Decrypt of file size %d, resulted in different values", size)
+			}
+		}
+	}
+}
+
+// TestRoundTripWithPassword tests several size sets of data going through the encrypt/decrypt
+// to make sure they come out the same.
+func TestRoundTripWithPassword(t *testing.T) {
 	spasswords := []string{
 		"",
 		"test",
@@ -53,7 +106,7 @@ func TestRoundTrip(t *testing.T) {
 	for _, x := range []int{13, 400} {
 		rp, err := randBytes(x)
 		if err != nil {
-			t.Fatalf("randBytes(%d) => err", x)
+			t.Fatalf("randBytes() => %q", err)
 		}
 		spasswords = append(spasswords, string(rp))
 	}
@@ -67,9 +120,9 @@ func TestRoundTrip(t *testing.T) {
 				t.Errorf("randBytes(%d) => %q; want nil", size, err)
 				continue
 			}
-			encReader, err := newEncryptReader(bytes.NewReader(b), password, salt, 1024)
+			encReader, err := newEncryptReaderWithPassword(bytes.NewReader(b), password, salt, 1024)
 			if err != nil {
-				t.Errorf("NewEncryptReader() => %q; want nil", err)
+				t.Errorf("NewEncryptReaderWithPassword() => %q; want nil", err)
 				continue
 			}
 			cipher, err := ioutil.ReadAll(encReader)
@@ -77,13 +130,13 @@ func TestRoundTrip(t *testing.T) {
 				t.Errorf("ioutil.ReadAll(*EncryptReader) => %q; want nil", err)
 				continue
 			}
-			decReader, err := NewDecryptReader(bytes.NewReader(cipher), password)
+			decReader, err := NewDecryptReaderWithPassword(bytes.NewReader(cipher), password)
 			if err != nil {
-				t.Errorf("NewDecryptReader() => %q; want nil", err)
+				t.Errorf("NewDecryptReaderWithPassword() => %q; want nil", err)
 				continue
 			}
 			plain, err := ioutil.ReadAll(decReader)
-			decReader.Close()
+			_ = decReader.Close()
 			if err != nil {
 				t.Errorf("ioutil.ReadAll(*DecryptReader) => %q; want nil", err)
 				continue
@@ -99,13 +152,13 @@ func TestHash(t *testing.T) {
 	sizes := []int{24, 1024, 15872, 16364, 16384, 16394, 16896, 66560}
 	for _, size := range sizes {
 		h := sha256.New()
-		t.Logf("Testing file of size: %db, with password: %s", size, password)
+		t.Logf("Testing file of size: %db", size)
 		b, err := randBytes(size)
 		if err != nil {
 			t.Errorf("randBytes(%d) => %q; want nil", size, err)
 			continue
 		}
-		encReader, err := newEncryptReader(bytes.NewReader(b), password, salt, 1024)
+		encReader, err := newEncryptReader(bytes.NewReader(b), aesKey, hmacKey)
 		if err != nil {
 			t.Errorf("NewEncryptReader() => %q; want nil", err)
 			continue
@@ -117,7 +170,8 @@ func TestHash(t *testing.T) {
 		}
 		want := h.Sum(nil)
 		h.Reset()
-		got, err := Hash(bytes.NewReader(b), bytes.NewReader(cipher[0:HeaderSize]), password, h)
+		key := append(aesKey, hmacKey...)
+		got, err := Hash(bytes.NewReader(b), bytes.NewReader(cipher[0:HeaderSize]), key, h)
 		if err != nil {
 			t.Errorf("Hash() => err = %q; want nil", err)
 			continue
@@ -126,5 +180,37 @@ func TestHash(t *testing.T) {
 			t.Errorf("Hash() => %v; want %v", got, want)
 		}
 	}
+}
 
+func TestHashWithPassword(t *testing.T) {
+	sizes := []int{24, 1024, 15872, 16364, 16384, 16394, 16896, 66560}
+	for _, size := range sizes {
+		h := sha256.New()
+		t.Logf("Testing file of size: %db, with password: %s", size, password)
+		b, err := randBytes(size)
+		if err != nil {
+			t.Errorf("randBytes(%d) => %q; want nil", size, err)
+			continue
+		}
+		encReader, err := newEncryptReaderWithPassword(bytes.NewReader(b), password, salt, 1024)
+		if err != nil {
+			t.Errorf("NewEncryptReaderWithPassword() => %q; want nil", err)
+			continue
+		}
+		cipher, err := ioutil.ReadAll(io.TeeReader(encReader, h))
+		if err != nil {
+			t.Errorf("ioutil.ReadAll(*EncryptReader) => %q; want nil", err)
+			continue
+		}
+		want := h.Sum(nil)
+		h.Reset()
+		got, err := HashWithPassword(bytes.NewReader(b), bytes.NewReader(cipher[0:HeaderSize]), password, h)
+		if err != nil {
+			t.Errorf("HashWithPassword() => err = %q; want nil", err)
+			continue
+		}
+		if !bytes.Equal(got, want) {
+			t.Errorf("HashWithPassword() => %v; want %v", got, want)
+		}
+	}
 }
